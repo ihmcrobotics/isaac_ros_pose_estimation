@@ -254,10 +254,10 @@ components:
   parameters:
     receiver: rgb_input
     min_size: 1
-- type: nvidia::gxf::MessageAvailableSchedulingTerm
-  parameters:
-    receiver: segmentation_input
-    min_size: 1
+# - type: nvidia::gxf::MessageAvailableSchedulingTerm
+#   parameters:
+#     receiver: segmentation_input
+#     min_size: 1
 - type: nvidia::gxf::MessageAvailableSchedulingTerm
   parameters:
     receiver: camera_model_input
@@ -279,7 +279,7 @@ components:
     rgb_input: rgb_input
     segmentation_input: segmentation_input
     camera_model_input: camera_model_input
-    mode: refine
+    mode: tracking
     output: output
     allocator: allocator
     min_depth: 0.1

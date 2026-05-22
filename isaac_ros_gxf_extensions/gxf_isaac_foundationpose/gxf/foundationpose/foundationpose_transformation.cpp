@@ -125,6 +125,12 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
     return gxf::ToResultCode(maybe_refined_poses_message);
   }
 
+  GXF_LOG_ERROR(
+    "[Transform] received refined_poses_input mode=%s iter=%d received_batches=%d",
+    mode_.get().c_str(),
+    iteration_count_,
+    received_batches_);
+
   gxf::Entity pose_message;
   if (iteration_count_ == 0) {
     const auto maybe_pose_message = poses_receiver_->receive();
@@ -178,6 +184,12 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
   auto translations_handle = maybe_translation_tensor.value();
   auto poses_handle = maybe_pose_tensor.value();
 
+  GXF_LOG_ERROR(
+    "[Transform] poses bytes=%zu rotations bytes=%zu translations bytes=%zu",
+    poses_handle->size(),
+    rotations_handle->size(),
+    translations_handle->size());
+
   const uint32_t pose_nums = poses_handle->shape().dimension(0);
   const uint32_t pose_rows = poses_handle->shape().dimension(1);
   const uint32_t pose_cols = poses_handle->shape().dimension(2);
@@ -187,6 +199,16 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
 
   const uint32_t translations_nums = translations_handle->shape().dimension(0);
   const uint32_t translations_shape = translations_handle->shape().dimension(1);
+
+  GXF_LOG_ERROR(
+    "[Transform] pose_shape=(%u,%u,%u) rotation_shape=(%u,%u) translation_shape=(%u,%u)",
+    pose_nums,
+    pose_rows,
+    pose_cols,
+    rotation_nums,
+    rotation_shape,
+    translations_nums,
+    translations_shape);
 
   // Check the size are equal
   if (pose_nums == 0) {
@@ -266,6 +288,10 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
     auto normalized_vect = (cur_rot_delta.array().tanh() * rot_normalizer_).matrix();
     Eigen::AngleAxisf rot_delta_angle_axis(normalized_vect.norm(), normalized_vect.normalized());
     rot_mat_delta[index] = rot_delta_angle_axis.toRotationMatrix().transpose();
+    if (mode_.get() == "detection" || mode_.get() == "tracking") {
+      trans_delta_vec[index].setZero();
+      rot_mat_delta[index].setIdentity();
+    }
   }
 
   // Pose array is colum-major
@@ -282,6 +308,16 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
     cur_pose.col(3).head(3) += trans_delta_vec[index];
 
     Eigen::Vector3f after_t = cur_pose.col(3).head(3);
+
+    if (index < 5) {
+      GXF_LOG_ERROR(
+      "[BeforePublish] mode=%s idx=%zu t=(%f,%f,%f)",
+      mode_.get().c_str(),
+      index,
+      cur_pose(0, 3),
+      cur_pose(1, 3),
+      cur_pose(2, 3));
+}
 
     {
       std::ofstream log_file("/tmp/foundationpose_transform_debug.txt", std::ios::app);
@@ -373,6 +409,10 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
   } else if (received_batches_ < kNumBatches - 1) {
     // Expected more batches, only publish current sliced message to score render.
     GXF_LOG_DEBUG ("[FoundationposeTransformation] Publish sliced poses to render.");
+    GXF_LOG_ERROR(
+      "[Transform] publishing sliced_output received_batches=%d pose_nums=%u",
+      received_batches_,
+      pose_nums);
     sliced_pose_array_transmitter_->publish(std::move(output_message));
   } else {
     // Accumulated all batcheds, publish batched message to decoder and current sliced message to score render.
@@ -412,8 +452,15 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
       batched_pose_arrays->pointer(), batched_refined_pose_.data(), batched_pose_arrays->size(),
       cudaMemcpyHostToDevice, cuda_stream_));
     batched_refined_pose_.clear();
-
+    GXF_LOG_ERROR(
+      "[Transform] publishing sliced_output received_batches=%d pose_nums=%u",
+      received_batches_,
+      pose_nums);
     sliced_pose_array_transmitter_->publish(std::move(output_message));
+    GXF_LOG_ERROR(
+      "[Transform] publishing batched_output received_batches=%d batched_pose_bytes=%zu",
+      received_batches_,
+      batched_pose_arrays->size());
     batched_pose_array_transmitter_->publish(std::move(batched_output_message));
   }
 

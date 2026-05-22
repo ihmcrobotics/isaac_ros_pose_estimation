@@ -986,6 +986,11 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
   }
 
   int batch_size = ob_in_cams.size() / kNumBatches;
+  GXF_LOG_ERROR(
+    "[Sampling] total_poses=%zu batch_size=%d source_pose_bytes=%zu",
+    ob_in_cams.size(),
+    batch_size,
+    ob_in_cams_vector.size() * sizeof(float));
   for (int i = 0; i < kNumBatches; i++) {
     // Allocate output message
     auto maybe_output_message = gxf::Entity::New(context());
@@ -1029,8 +1034,39 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
     }
 
     CHECK_CUDA_ERRORS(cudaMemcpyAsync(
-        pose_arrays->pointer(), &ob_in_cams_vector[i*batch_size*16], pose_arrays->size(), cudaMemcpyHostToDevice, cuda_stream_));
+        pose_arrays->pointer(),
+        &ob_in_cams_vector[i * batch_size * 16],
+        pose_arrays->size(),
+        cudaMemcpyHostToDevice,
+        cuda_stream_));
     cudaStreamSynchronize(cuda_stream_);
+
+    std::vector<float> debug_pose_host(batch_size * 16);
+
+    CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+        debug_pose_host.data(),
+        pose_arrays->pointer(),
+        pose_arrays->size(),
+        cudaMemcpyDeviceToHost,
+        cuda_stream_));
+    cudaStreamSynchronize(cuda_stream_);
+
+    for (int j = 0; j < std::min(5, batch_size); ++j) {
+      GXF_LOG_ERROR(
+        "[SamplingTensorRot] batch=%d local_i=%d r00=%f r01=%f r02=%f",
+        i, j,
+        debug_pose_host[j * 16 + 0],
+        debug_pose_host[j * 16 + 4],
+        debug_pose_host[j * 16 + 8]);
+      GXF_LOG_ERROR(
+        "[SamplingTensor] batch=%d local_i=%d global_i=%d t=(%f,%f,%f)",
+        i,
+        j,
+        i * batch_size + j,
+        debug_pose_host[j * 16 + 12],
+        debug_pose_host[j * 16 + 13],
+        debug_pose_host[j * 16 + 14]);
+    }
 
     // Create entity, and forward camera model
     auto maybe_camera_model_out_message = gxf::Entity::New(context());
@@ -1045,7 +1081,20 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
       return gxf::ToResultCode(maybe_camera_model);
     }
     *maybe_camera_model.value() = *gxf_camera_model;
+    const int start_idx = i * batch_size;
+    const int end_idx = start_idx + batch_size;
+
+    GXF_LOG_ERROR(
+      "[Sampling] batch=%d start=%d end=%d batch_size=%d tensor_bytes=%zu expected_bytes=%zu",
+      i,
+      start_idx,
+      end_idx,
+      batch_size,
+      pose_arrays->size(),
+      static_cast<size_t>(batch_size) * kPoseMatrixLength * kPoseMatrixLength * sizeof(float));
+
     GXF_LOG_ERROR("[Sampling] Publishing batch %d / %d", i, kNumBatches);
+
     posearray_transmitter_->publish(output_message);
     point_cloud_transmitter_->publish(maybe_xyz_message.value());
     rgb_transmitter_->publish(maybe_rgb_message.value());

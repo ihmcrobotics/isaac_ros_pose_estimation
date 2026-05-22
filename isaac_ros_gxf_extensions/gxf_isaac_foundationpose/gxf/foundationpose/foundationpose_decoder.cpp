@@ -113,12 +113,20 @@ gxf_result_t FoundationposeDecoder::tick() noexcept {
     GXF_LOG_ERROR("[FoundationposeDecoder] Failed to get pose array message from receiver.");
     return gxf::ToResultCode(maybe_pose_array_message);
   }
+  GXF_LOG_ERROR("[Decoder] received batched poses");
   auto maybe_pose_array_tensor = maybe_pose_array_message.value().get<gxf::Tensor>();
   if (!maybe_pose_array_tensor) {
     GXF_LOG_ERROR("[FoundationposeDecoder] Failed to get pose array tensor from the message.");
     return gxf::ToResultCode(maybe_pose_array_tensor);
   }
   auto pose_array_tensor = maybe_pose_array_tensor.value();
+
+  GXF_LOG_ERROR(
+    "[Decoder] pose_shape=(%d,%d,%d) bytes=%zu",
+    pose_array_tensor->shape().dimension(0),
+    pose_array_tensor->shape().dimension(1),
+    pose_array_tensor->shape().dimension(2),
+    pose_array_tensor->size());
   
   auto n_detections = pose_array_tensor->shape().dimension(0);
   if (n_detections == 0) {

@@ -228,10 +228,10 @@ components:
   parameters:
     receiver: depth_input
     min_size: 1
-- type: nvidia::gxf::MessageAvailableSchedulingTerm
-  parameters:
-    receiver: segmentation_input
-    min_size: 1
+# - type: nvidia::gxf::MessageAvailableSchedulingTerm
+#   parameters:
+#     receiver: segmentation_input
+#     min_size: 1
 - type: nvidia::gxf::MessageAvailableSchedulingTerm
   parameters:
     receiver: rgb_input
@@ -508,10 +508,10 @@ components:
   parameters:
     receivers: [rgb_input, iterative_rgb_input]
     min_sum: 1
-- type: nvidia::gxf::MessageAvailableSchedulingTerm
-  parameters:
-    receiver: segmentation_input
-    min_size: 1
+# - type: nvidia::gxf::MessageAvailableSchedulingTerm
+#   parameters:
+#     receiver: segmentation_input
+#     min_size: 1
 - type: nvidia::gxf::MultiMessageAvailableSchedulingTerm
   parameters:
     receivers: [camera_model_input, iterative_camera_model_input]
@@ -784,10 +784,10 @@ components:
   parameters:
     receiver: rgb_input
     min_size: 1
-- type: nvidia::gxf::MessageAvailableSchedulingTerm
-  parameters:
-    receiver: segmentation_input
-    min_size: 1
+# - type: nvidia::gxf::MessageAvailableSchedulingTerm
+#   parameters:
+#     receiver: segmentation_input
+#     min_size: 1
 - type: nvidia::gxf::MessageAvailableSchedulingTerm
   parameters:
     receiver: camera_model_input

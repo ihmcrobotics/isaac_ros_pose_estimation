@@ -894,6 +894,51 @@ void DilateMaskOnCPU(
   CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
 }
 
+void ErodeMaskOnCPU(
+    cudaStream_t stream,
+    uint8_t* mask_device,
+    size_t N,
+    size_t H,
+    size_t W,
+    int erosion_radius)
+{
+  std::vector<uint8_t> mask_host(N * H * W);
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      mask_host.data(),
+      mask_device,
+      N * H * W * sizeof(uint8_t),
+      cudaMemcpyDeviceToHost,
+      stream));
+
+  CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
+
+  cv::Mat kernel = cv::getStructuringElement(
+      cv::MORPH_ELLIPSE,
+      cv::Size(2 * erosion_radius + 1,
+               2 * erosion_radius + 1));
+
+  for (size_t i = 0; i < N; ++i)
+  {
+    cv::Mat mask(
+        static_cast<int>(H),
+        static_cast<int>(W),
+        CV_8UC1,
+        mask_host.data() + i * H * W);
+
+    cv::erode(mask, mask, kernel);
+  }
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      mask_device,
+      mask_host.data(),
+      N * H * W * sizeof(uint8_t),
+      cudaMemcpyHostToDevice,
+      stream));
+
+  CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
+}
+
 void SaveMaskDebugImage(
     cudaStream_t stream,
     uint8_t* mask_device,
@@ -1015,6 +1060,11 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   gxf::Entity pose_message;
   gxf::Entity xyz_message;
 
+  const bool should_receive_segmentation =
+    (mode_.get() == "tracking") ||
+    (mode_.get() == "refine" && refine_received_batches_ == 0) ||
+    (mode_.get() == "score" && score_received_batches_ == 0);
+
   // Receive from upstream node on the first iteration
   if (iteration_count_ == 0) {
     auto maybe_rgb_message = rgb_receiver_->receive();
@@ -1031,7 +1081,7 @@ gxf_result_t FoundationposeRender::tick() noexcept {
     // }
     // segmentation_message = maybe_segmentation_message.value();
 
-    if (iteration_count_ == 0) {
+    if (should_receive_segmentation) {
       auto maybe_segmentation_message = segmentation_receiver_->receive();
 
       if (!maybe_segmentation_message) {
@@ -1133,7 +1183,7 @@ gxf_result_t FoundationposeRender::tick() noexcept {
 
   gxf::Handle<gxf::VideoBuffer> segmentation_handle;
 
-  if (iteration_count_ == 0) {
+  if (should_receive_segmentation) {
     auto maybe_segmentation_image = segmentation_message.get<gxf::VideoBuffer>();
     if (!maybe_segmentation_image) {
       GXF_LOG_ERROR("[FoundationposeRender] Failed to get segmentation image");
@@ -1260,7 +1310,21 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   for (size_t i = 0; i < N; i++) {
     Eigen::Map<Eigen::MatrixXf> mat(
         pose_host.data() + i * pose_rows * pose_cols, pose_rows, pose_cols);
+    GXF_LOG_ERROR(
+      "[PoseRead] i=%d ptr=%p t=(%f,%f,%f)",
+      i,
+      pose_host.data() + i * pose_rows * pose_cols,
+      mat(0,3),
+      mat(1,3),
+      mat(2,3));
     poses.push_back(mat);
+    GXF_LOG_ERROR(
+      "[RenderInputPose] mode=%s pose=%zu t=(%f,%f,%f)",
+      mode_.get().c_str(),
+      i,
+      mat(0, 3),
+      mat(1, 3),
+      mat(2, 3));
   }
 
   // ======================================================
@@ -1378,14 +1442,15 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   // Prepare transformation matrices
   PreparePerspectiveTransformMatrix(cuda_stream_, tfs, trans_matrix_device_, N);
 
-  nvcv::Tensor mask_tensor;
-  WrapImgPtrToNHWCTensor(
-    reinterpret_cast<uint8_t*>(segmentation_handle->pointer()),
-    mask_tensor,
-    1,
-    rgb_H,
-    rgb_W,
-    1);
+  
+  // nvcv::Tensor mask_tensor;
+  // WrapImgPtrToNHWCTensor(
+  //   reinterpret_cast<uint8_t*>(segmentation_handle->pointer()),
+  //   mask_tensor,
+  //   1,
+  //   rgb_H,
+  //   rgb_W,
+  //   1);
 
   // Process RGB image and XYZ map using BatchedWarpPerspective
   const nvcv::ImageFormat fmt_rgb = nvcv::FMT_RGB8;
@@ -1494,7 +1559,7 @@ gxf_result_t FoundationposeRender::tick() noexcept {
 
   // CHECK_CUDA_ERRORS(cudaGetLastError());
 
-  if (iteration_count_ == 0) {
+  if (should_receive_segmentation) {
     nvcv::Tensor mask_tensor;
     WrapImgPtrToNHWCTensor(
         reinterpret_cast<uint8_t*>(segmentation_handle->pointer()),
@@ -1525,6 +1590,22 @@ gxf_result_t FoundationposeRender::tick() noexcept {
         H,
         W,
         mode_.get() + std::string("_warped_mask"));
+    
+    ErodeMaskOnCPU(
+      cuda_stream_,
+      transformed_mask_device_,
+      N,
+      H,
+      W,
+      3);
+
+    SaveMaskDebugImage(
+      cuda_stream_,
+      transformed_mask_device_,
+      N,
+      H,
+      W,
+      mode_.get() + std::string("_eroded_mask"));
 
     apply_mask_to_xyz(
         cuda_stream_,
@@ -1580,6 +1661,9 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   // Score mode, accumulation stage
   // Only accumulate the output tensors and return
   if (mode_.get() == "score" && score_received_batches_ < kNumBatches - 1) {
+    GXF_LOG_ERROR(
+    "[Render score] entered accumulation score_received_batches=%d",
+    score_received_batches_);
     auto score_output_offset = score_received_batches_*N*H*W*2*C;
     concat(
         cuda_stream_,
@@ -1630,7 +1714,14 @@ gxf_result_t FoundationposeRender::tick() noexcept {
           N, H, W, C,
           timestamp_ptr_final, "original");
     }
+    GXF_LOG_ERROR(
+      "[Render score] accumulated partial batch=%d offset=%zu",
+      score_received_batches_,
+      score_output_offset);
     score_received_batches_ += 1;
+    GXF_LOG_ERROR(
+      "[Render score] returning after partial accumulation next_score_received_batches=%d",
+      score_received_batches_);
     return GXF_SUCCESS;
   }
 
@@ -1663,7 +1754,8 @@ gxf_result_t FoundationposeRender::tick() noexcept {
     return gxf::ToResultCode(maybe_added_timestamp);
   }
 
-  uint32_t batch_size = mode_.get() == "refine" ? N : total_poses;
+  uint32_t batch_size = (mode_.get() == "score") ? total_poses : N;
+  // uint32_t batch_size = mode_.get() == "refine" ? N : total_poses;
   std::array<int32_t, nvidia::gxf::Shape::kMaxRank> output_shape{
       static_cast<int>(batch_size), static_cast<int>(H), static_cast<int>(W), C + C};
 
@@ -1773,6 +1865,11 @@ gxf_result_t FoundationposeRender::tick() noexcept {
     }
   } else {
     // Score mode, and all messages are accumulated.
+    GXF_LOG_ERROR(
+      "[Render score] FINAL accumulation entered score_received_batches=%d N=%zu total_poses=%u",
+      score_received_batches_,
+      N,
+      total_poses);
     // Concat the last sliced output tensors and publish the results
     auto score_output_offset = score_received_batches_*N*H*W*2*C;
     concat(
@@ -1828,8 +1925,19 @@ gxf_result_t FoundationposeRender::tick() noexcept {
           N, H, W, C,
           timestamp_ptr_final, "original");
     }
+    GXF_LOG_ERROR(
+      "[Render score] FINAL ready to publish rendered_tensor_bytes=%zu original_tensor_bytes=%zu",
+      rendered_tensor->size(),
+      original_tensor->size());
     score_received_batches_ = 0;
   }
+
+  GXF_LOG_ERROR(
+    "[Render %s] publishing output score_received_batches=%d N=%zu total_poses=%u",
+    mode_.get().c_str(),
+    score_received_batches_,
+    N,
+    total_poses);
 
   CHECK_CUDA_ERRORS(cudaStreamSynchronize(cuda_stream_));
   return gxf::ToResultCode(pose_array_transmitter_->publish(std::move(output_message)));
