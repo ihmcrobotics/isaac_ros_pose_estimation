@@ -54,6 +54,8 @@ void interpolate(
 void texture(
     cudaStream_t stream, float* tex_ptr, float* uv_ptr, float* out, int tex_height, int tex_width, int tex_channel,
     int tex_depth, int H, int W, int N);
+void apply_mask_to_xyz(
+    cudaStream_t stream, float* xyz, const uint8_t* mask, int total_pixels);
 
 }  // namespace isaac_ros
 }  // namespace nvidia

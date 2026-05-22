@@ -47,6 +47,10 @@ constexpr char INPUT_RGB_IMAGE_COMPONENT_KEY[] = "sync/rgb_image_receiver";
 constexpr char INPUT_RGB_IMAGE_TENSOR_FORMAT[] = "nitros_image_rgb8";
 constexpr char INPUT_RGB_IMAGE_TOPIC_NAME[] = "tracking/image";
 
+constexpr char INPUT_SEGMENTATION_COMPONENT_KEY[] = "sync/mask_receiver";
+constexpr char INPUT_SEGMENTATION_FORMAT[] = "nitros_image_mono8";
+constexpr char INPUT_SEGMENTATION_TOPIC_NAME[] = "tracking/segmentation";
+
 constexpr char INPUT_CAMERA_INFO_COMPONENT_KEY[] = "sync/camera_model_receiver";
 constexpr char INPUT_CAMERA_INFO_FORMAT[] = "nitros_camera_info";
 constexpr char INPUT_CAMERA_INFO_TOPIC_NAME[] = "tracking/camera_info";
@@ -102,6 +106,13 @@ const nitros::NitrosPublisherSubscriberConfigMap CONFIG_MAP = {
       .compatible_data_format = INPUT_RGB_IMAGE_TENSOR_FORMAT,
       .topic_name = INPUT_RGB_IMAGE_TOPIC_NAME,
     }},
+  {INPUT_SEGMENTATION_COMPONENT_KEY,
+  {
+    .type = nitros::NitrosPublisherSubscriberType::NEGOTIATED,
+    .qos = rclcpp::QoS(1),
+    .compatible_data_format = INPUT_SEGMENTATION_FORMAT,
+    .topic_name = INPUT_SEGMENTATION_TOPIC_NAME,
+  }},
   {INPUT_CAMERA_INFO_COMPONENT_KEY,
     {
       .type = nitros::NitrosPublisherSubscriberType::NEGOTIATED,

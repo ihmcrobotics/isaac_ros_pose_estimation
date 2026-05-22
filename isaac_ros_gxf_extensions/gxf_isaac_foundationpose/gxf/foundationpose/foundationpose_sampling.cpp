@@ -21,9 +21,11 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <sstream>
 
 #include <Eigen/Dense>
 #include <cuda_runtime.h>
+#include <opencv2/opencv.hpp>
 
 #include "foundationpose_utils.hpp"
 #include "gxf/multimedia/camera.hpp"
@@ -653,6 +655,16 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
   }
 
   auto maybe_segmentation_message = segmentation_receiver_->receive();
+  
+  if (!maybe_segmentation_message) {
+  GXF_LOG_ERROR("[FoundationposeSampling] Failed to receive segmentation message");
+  return maybe_segmentation_message.error();
+  }
+
+  auto segmentation_message = maybe_segmentation_message.value();
+
+  GXF_LOG_INFO("[FoundationposeSampling] Received segmentation message");
+
   if (!maybe_segmentation_message) {
     GXF_LOG_ERROR("[FoundationposeSampling] Failed to receive point cloud message");
     return maybe_segmentation_message.error();
@@ -676,6 +688,12 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
     return maybe_segmentation_image.error();
   }
 
+  auto maybe_rgb_image = maybe_rgb_message.value().get<gxf::VideoBuffer>();
+  if (!maybe_rgb_image) {
+    GXF_LOG_ERROR("[FoundationposeSampling] Failed to get RGB image from message");
+    return maybe_rgb_image.error();
+  }
+
   // Try to reload mesh if the path has changed
   mesh_storage_.get()->TryReloadMesh();
 
@@ -684,6 +702,9 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
 
   auto segmentation_handle = maybe_segmentation_image.value();
   auto segmentation_info = segmentation_handle->video_frame_info();
+
+  auto rgb_handle = maybe_rgb_image.value();
+  auto rgb_info = rgb_handle->video_frame_info();
 
   if (depth_info.width != segmentation_info.width ||
       depth_info.height != segmentation_info.height) {
@@ -761,10 +782,135 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
   
   // Always estimate translation first
   auto success = GuessTranslation(bilateral_filter_depth_host, mask, K, min_depth_, center);
+
   if (!success) {
     GXF_LOG_INFO("[FoundationposeSampling] Failed to guess translation. Not processing this image");
     return GXF_SUCCESS;
   }
+
+  // =========================================
+  // Debug centroid projection
+  // =========================================
+
+  float X = center[0];
+  float Y = center[1];
+  float Z = center[2];
+
+  float u_proj = K(0, 0) * X / Z + K(0, 2);
+  float v_proj = K(1, 1) * Y / Z + K(1, 2);
+
+  GXF_LOG_INFO(
+      "[Centroid Debug] center=(%f, %f, %f), projected=(%f, %f)",
+      X, Y, Z, u_proj, v_proj);
+
+
+  // ------------------------------------------------------
+  // Compute mask bbox center
+  // ------------------------------------------------------
+
+  int min_u = static_cast<int>(width);
+  int max_u = 0;
+  int min_v = static_cast<int>(height);
+  int max_v = 0;
+  bool has_mask = false;
+
+  for (int v = 0; v < static_cast<int>(height); ++v)
+  {
+    for (int u = 0; u < static_cast<int>(width); ++u)
+    {
+      if (mask(v, u) > 0)
+      {
+        has_mask = true;
+        min_u = std::min(min_u, u);
+        max_u = std::max(max_u, u);
+        min_v = std::min(min_v, v);
+        max_v = std::max(max_v, v);
+      }
+    }
+  }
+
+  float uc = 0.0f;
+  float vc = 0.0f;
+
+  if (has_mask)
+  {
+    uc = (min_u + max_u) / 2.0f;
+    vc = (min_v + max_v) / 2.0f;
+
+    GXF_LOG_INFO(
+        "[Mask Center Debug] bbox=[u:%d-%d, v:%d-%d], mask_center=(%f, %f)",
+        min_u, max_u, min_v, max_v, uc, vc);
+  }
+  else
+  {
+    GXF_LOG_WARNING("[Mask Center Debug] mask is empty");
+  }
+
+
+  // ------------------------------------------------------
+  // Copy RGB image from GPU to CPU and save visualization
+  // ------------------------------------------------------
+
+  if (rgb_info.width == width && rgb_info.height == height)
+  {
+    cv::Mat rgb_cpu(
+        static_cast<int>(height),
+        static_cast<int>(width),
+        CV_8UC3);
+
+    CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+        rgb_cpu.data,
+        rgb_handle->pointer(),
+        height * width * 3 * sizeof(uint8_t),
+        cudaMemcpyDeviceToHost,
+        cuda_stream_));
+
+    cudaStreamSynchronize(cuda_stream_);
+
+    // Input is RGB8, OpenCV imwrite expects BGR
+    cv::cvtColor(rgb_cpu, rgb_cpu, cv::COLOR_RGB2BGR);
+
+    // RED = projected 3D centroid
+    cv::circle(
+        rgb_cpu,
+        cv::Point(static_cast<int>(std::round(u_proj)), static_cast<int>(std::round(v_proj))),
+        8,
+        cv::Scalar(0, 0, 255),
+        -1);
+
+    // BLUE = mask bbox center
+    if (has_mask)
+    {
+      cv::circle(
+          rgb_cpu,
+          cv::Point(static_cast<int>(std::round(uc)), static_cast<int>(std::round(vc))),
+          8,
+          cv::Scalar(255, 0, 0),
+          -1);
+    }
+
+    static int debug_frame_idx = 0;
+
+    std::stringstream ss;
+    ss << "/tmp/foundationpose_debug/frame_"
+      << std::setw(6)
+      << std::setfill('0')
+      << debug_frame_idx++
+      << ".png";
+
+    cv::imwrite(ss.str(), rgb_cpu);
+  }
+  else
+  {
+    GXF_LOG_WARNING(
+        "[Centroid Debug] RGB size (%u x %u) does not match depth/mask size (%u x %u). Not saving image.",
+        rgb_info.width, rgb_info.height, width, height);
+  }
+    
+  // ======================================================
+  // DEBUG CENTROID VISUALIZATION ENDS HERE
+  // ======================================================
+      
   GXF_LOG_INFO("[FoundationposeSampling] Initial estimated translation: [x=%f, y=%f, z=%f]", 
                center[0], center[1], center[2]);
 
@@ -899,6 +1045,7 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
       return gxf::ToResultCode(maybe_camera_model);
     }
     *maybe_camera_model.value() = *gxf_camera_model;
+    GXF_LOG_ERROR("[Sampling] Publishing batch %d / %d", i, kNumBatches);
     posearray_transmitter_->publish(output_message);
     point_cloud_transmitter_->publish(maybe_xyz_message.value());
     rgb_transmitter_->publish(maybe_rgb_message.value());

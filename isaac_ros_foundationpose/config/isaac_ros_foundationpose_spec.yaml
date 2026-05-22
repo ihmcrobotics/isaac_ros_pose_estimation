@@ -143,14 +143,14 @@ components:
   - id: [0x63138759e5624879, 0x4a95bd90e602d324]
     type: nvidia::isaac_ros::FoundationposeRender
     input_output_groups:
-      - input_keys: [rgb_input, camera_model_input, pose_array_input, point_cloud_input]
+      - input_keys: [rgb_input, camera_model_input, pose_array_input, point_cloud_input, segmentation_input]
         output_keys: [output]
         input_format_keys: []
         output_format_keys: []
         supported_formats:
           - platforms: [any]
             details:
-              - input_formats: [nitros_image_rgb8, nitros_camera_info, nitros_tensor_list_nchw, nitros_point_cloud]
+              - input_formats: [nitros_image_rgb8, nitros_camera_info, nitros_tensor_list_nchw, nitros_point_cloud, nitros_image_mono8]
                 output_formats: [nitros_tensor_list_nchw]
                 costs:
                   throughput: 10bytes/s

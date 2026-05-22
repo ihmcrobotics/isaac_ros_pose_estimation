@@ -239,6 +239,32 @@ __global__ void pose_clip_kernel_fused(
     }
 }
 
+__global__ void apply_mask_to_xyz_kernel(
+    float* xyz,
+    const uint8_t* mask,
+    int total_pixels)
+{
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= total_pixels) return;
+
+  if (mask[idx] == 0) {
+    xyz[idx * 3 + 0] = 0.0f;
+    xyz[idx * 3 + 1] = 0.0f;
+    xyz[idx * 3 + 2] = 0.0f;
+  }
+}
+
+void apply_mask_to_xyz(
+    cudaStream_t stream,
+    float* xyz,
+    const uint8_t* mask,
+    int total_pixels)
+{
+  int block = 256;
+  int grid = (total_pixels + block - 1) / block;
+  apply_mask_to_xyz_kernel<<<grid, block, 0, stream>>>(xyz, mask, total_pixels);
+}
+
 void clamp(cudaStream_t stream, float* input, float min_value, float max_value, int N) {
   int block_size = 256;
   int grid_size = (N + block_size - 1) / block_size;

@@ -350,6 +350,12 @@ gxf_result_t FoundationposeRender::registerInterface(gxf::Registrar* registrar) 
       mesh_storage_, "mesh_storage", "Mesh Storage",
       "The mesh storage for mesh reuse");
 
+  result &= registrar->parameter(
+    segmentation_receiver_,
+    "segmentation_input",
+    "Segmentation Input",
+    "Segmentation mask input as a video buffer");
+
   return gxf::ToResultCode(result);
 }
 
@@ -398,6 +404,7 @@ gxf_result_t FoundationposeRender::AllocateDeviceMemory(
     CHECK_CUDA_ERRORS(cudaMalloc(&score_original_output_device_, total_poses * 2 * H * W * C * sizeof(float)));
     CHECK_CUDA_ERRORS(cudaMalloc(&wp_image_device_, N * H * W * C * sizeof(uint8_t)));
     CHECK_CUDA_ERRORS(cudaMalloc(&trans_matrix_device_, N * 9 * sizeof(float)));
+    CHECK_CUDA_ERRORS(cudaMalloc(&transformed_mask_device_, N * H * W * sizeof(uint8_t)));
 
     nvcv::TensorShape::ShapeType shape{N, H, W, C};
     nvcv::TensorShape tensor_shape{shape, "NHWC"};
@@ -445,6 +452,7 @@ gxf_result_t FoundationposeRender::FreeDeviceMemory() {
   CHECK_CUDA_ERRORS(cudaFree(wp_image_device_));
   CHECK_CUDA_ERRORS(cudaFree(trans_matrix_device_));
   CHECK_CUDA_ERRORS(cudaFree(bbox2d_device_));
+  CHECK_CUDA_ERRORS(cudaFree(transformed_mask_device_));
 
   return GXF_SUCCESS;
 }
@@ -777,6 +785,157 @@ void FoundationposeRender::SaveXYZImage(
   GXF_LOG_INFO("[FoundationposeRender] Saved %zu %s point cloud images to %s", N, image_type.c_str(), debug_dir.c_str());
 }
 
+// Debug
+void SaveXYZDebugImage(
+    cudaStream_t stream,
+    float* xyz_device,
+    size_t N,
+    size_t H,
+    size_t W,
+    size_t C,
+    const std::string& tag)
+{
+  std::filesystem::create_directories("/tmp/foundationpose_xyz_debug");
+
+  std::vector<float> xyz_host(N * H * W * C);
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      xyz_host.data(),
+      xyz_device,
+      N * H * W * C * sizeof(float),
+      cudaMemcpyDeviceToHost,
+      stream));
+
+  CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
+
+  static int xyz_debug_idx = 0;
+
+  for (size_t i = 0; i < N; ++i)
+  {
+    cv::Mat z_vis(H, W, CV_8UC1, cv::Scalar(0));
+
+    float z_min = std::numeric_limits<float>::max();
+    float z_max = std::numeric_limits<float>::lowest();
+
+    for (size_t p = 0; p < H * W; ++p)
+    {
+      float z = xyz_host[(i * H * W + p) * C + 2];
+      if (z > 0.0f && std::isfinite(z))
+      {
+        z_min = std::min(z_min, z);
+        z_max = std::max(z_max, z);
+      }
+    }
+
+    for (size_t y = 0; y < H; ++y)
+    {
+      for (size_t x = 0; x < W; ++x)
+      {
+        size_t idx = (i * H * W + y * W + x) * C;
+        float z = xyz_host[idx + 2];
+
+        if (z > 0.0f && std::isfinite(z) && z_max > z_min)
+        {
+          z_vis.at<uint8_t>(y, x) =
+              static_cast<uint8_t>(255.0f * (z - z_min) / (z_max - z_min));
+        }
+      }
+    }
+
+    std::stringstream ss;
+    ss << "/tmp/foundationpose_xyz_debug/frame_"
+       << std::setw(6) << std::setfill('0') << xyz_debug_idx++
+       << "_" << tag
+       << "_pose_" << i
+       << ".png";
+
+    cv::imwrite(ss.str(), z_vis);
+  }
+}
+
+void DilateMaskOnCPU(
+    cudaStream_t stream,
+    uint8_t* mask_device,
+    size_t N,
+    size_t H,
+    size_t W,
+    int dilation_radius)
+{
+  std::vector<uint8_t> mask_host(N * H * W);
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      mask_host.data(),
+      mask_device,
+      N * H * W * sizeof(uint8_t),
+      cudaMemcpyDeviceToHost,
+      stream));
+  CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
+
+  cv::Mat kernel = cv::getStructuringElement(
+      cv::MORPH_ELLIPSE,
+      cv::Size(2 * dilation_radius + 1, 2 * dilation_radius + 1));
+
+  for (size_t i = 0; i < N; ++i) {
+    cv::Mat mask(
+        static_cast<int>(H),
+        static_cast<int>(W),
+        CV_8UC1,
+        mask_host.data() + i * H * W);
+
+    cv::dilate(mask, mask, kernel);
+  }
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      mask_device,
+      mask_host.data(),
+      N * H * W * sizeof(uint8_t),
+      cudaMemcpyHostToDevice,
+      stream));
+  CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
+}
+
+void SaveMaskDebugImage(
+    cudaStream_t stream,
+    uint8_t* mask_device,
+    size_t N,
+    size_t H,
+    size_t W,
+    const std::string& tag)
+  {
+    std::filesystem::create_directories("/tmp/foundationpose_mask_debug");
+
+    std::vector<uint8_t> mask_host(N * H * W);
+
+    CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+        mask_host.data(),
+        mask_device,
+        N * H * W * sizeof(uint8_t),
+        cudaMemcpyDeviceToHost,
+        stream));
+
+    CHECK_CUDA_ERRORS(cudaStreamSynchronize(stream));
+
+    static int mask_debug_idx = 0;
+
+    for (size_t i = 0; i < N; ++i)
+    { 
+      cv::Mat mask_image(
+          static_cast<int>(H),
+          static_cast<int>(W),
+          CV_8UC1,
+          mask_host.data() + i * H * W);
+
+      std::stringstream ss;
+      ss << "/tmp/foundationpose_mask_debug/frame_"
+        << std::setw(6) << std::setfill('0') << mask_debug_idx++
+        << "_" << tag
+        << "_pose_" << i
+        << ".png";
+
+      cv::imwrite(ss.str(), mask_image);
+    }
+  }
+
 // Create directory structure for debug images and point clouds
 std::string FoundationposeRender::CreateDebugDirectory(const gxf::Timestamp* timestamp, const std::string& data_type) {
   // Get timestamp to use for the directory
@@ -851,6 +1010,7 @@ gxf_result_t FoundationposeRender::tick() noexcept {
 
   // Selective receive messages based on the states
   gxf::Entity rgb_message;
+  gxf::Entity segmentation_message;
   gxf::Entity camera_model_message;
   gxf::Entity pose_message;
   gxf::Entity xyz_message;
@@ -863,6 +1023,29 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       return maybe_rgb_message.error();
     }
     rgb_message = maybe_rgb_message.value();
+
+    // auto maybe_segmentation_message = segmentation_receiver_->receive();
+    // if (!maybe_segmentation_message) {
+    //   GXF_LOG_ERROR("[FoundationposeRender] Failed to receive segmentation message");
+    //   return maybe_segmentation_message.error();
+    // }
+    // segmentation_message = maybe_segmentation_message.value();
+
+    if (iteration_count_ == 0) {
+      auto maybe_segmentation_message = segmentation_receiver_->receive();
+
+      if (!maybe_segmentation_message) {
+        GXF_LOG_ERROR("[FoundationposeRender] Failed to receive segmentation message");
+        return maybe_segmentation_message.error();
+      }
+
+      segmentation_message = maybe_segmentation_message.value();
+    }
+
+    GXF_LOG_INFO(
+    "[FoundationposeRender] Received segmentation in mode=%s iteration=%d",
+    mode_.get().c_str(),
+    iteration_count_);
 
     auto maybe_camera_model_message = camera_model_receiver_->receive();
     if (!maybe_camera_model_message) {
@@ -897,6 +1080,13 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       return maybe_rgb_message.error();
     }
     rgb_message = maybe_rgb_message.value();
+
+    // auto maybe_segmentation_message = segmentation_receiver_->receive();
+    // if (!maybe_segmentation_message) {
+    //   GXF_LOG_ERROR("[FoundationposeRender] Failed to receive segmentation message");
+    //   return maybe_segmentation_message.error();
+    // }
+    // segmentation_message = maybe_segmentation_message.value();
 
     auto iterative_camera_model_receiver = iterative_camera_model_receiver_.try_get();
     if (!iterative_camera_model_receiver) {
@@ -941,6 +1131,40 @@ gxf_result_t FoundationposeRender::tick() noexcept {
     return maybe_rgb_image.error();
   }
 
+  gxf::Handle<gxf::VideoBuffer> segmentation_handle;
+
+  if (iteration_count_ == 0) {
+    auto maybe_segmentation_image = segmentation_message.get<gxf::VideoBuffer>();
+    if (!maybe_segmentation_image) {
+      GXF_LOG_ERROR("[FoundationposeRender] Failed to get segmentation image");
+      return maybe_segmentation_image.error();
+    }
+
+    segmentation_handle = maybe_segmentation_image.value();
+
+    auto segmentation_info = segmentation_handle->video_frame_info();
+
+    GXF_LOG_INFO(
+        "[FoundationposeRender] Segmentation image: width=%u height=%u color_format=%d",
+        segmentation_info.width,
+        segmentation_info.height,
+        static_cast<int>(segmentation_info.color_format));
+  }
+
+  // auto maybe_segmentation_image = segmentation_message.get<gxf::VideoBuffer>();
+  // if (!maybe_segmentation_image) {
+  //   GXF_LOG_ERROR("[FoundationposeRender] Failed to get segmentation image");
+  //   return maybe_segmentation_image.error();
+  // }
+
+  // auto segmentation_info = maybe_segmentation_image.value()->video_frame_info();
+
+  // GXF_LOG_INFO(
+  // "[FoundationposeRender] Segmentation image: width=%u height=%u color_format=%d",
+  // segmentation_info.width,
+  // segmentation_info.height,
+  // static_cast<int>(segmentation_info.color_format));
+
   auto maybe_gxf_camera_model = camera_model_message.get<nvidia::gxf::CameraModel>(
     RAW_CAMERA_MODEL_GXF_NAME);
   if (!maybe_gxf_camera_model) {
@@ -961,8 +1185,14 @@ gxf_result_t FoundationposeRender::tick() noexcept {
     return maybe_poses.error();
   }
 
+  GXF_LOG_ERROR(
+    "[Render %s] iteration=%d received pose tensor",
+    mode_.get().c_str(),
+    iteration_count_);
+
   // Validate input
   auto rgb_img_handle = maybe_rgb_image.value();
+  // auto segmentation_handle = maybe_segmentation_image.value();
   auto rgb_img_info = rgb_img_handle->video_frame_info();
 
   auto xyz_map_handle = maybe_xyz_map.value();
@@ -971,6 +1201,14 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   const size_t N = poses_handle->shape().dimension(0);
   const size_t pose_rows = poses_handle->shape().dimension(1);
   const size_t pose_cols = poses_handle->shape().dimension(2);
+
+  GXF_LOG_ERROR(
+    "[Render %s] iteration=%d N=%zu pose_rows=%zu pose_cols=%zu",
+    mode_.get().c_str(),
+    iteration_count_,
+    N,
+    pose_rows,
+    pose_cols);
 
   if (N == 0) {
     GXF_LOG_ERROR("[FoundationposeRender] The received pose is empty");
@@ -1024,6 +1262,78 @@ gxf_result_t FoundationposeRender::tick() noexcept {
         pose_host.data() + i * pose_rows * pose_cols, pose_rows, pose_cols);
     poses.push_back(mat);
   }
+
+  // ======================================================
+  // DEBUG TRACKING POSE CENTER PROJECTION
+  // After poses vector is created, before ComputeCropWindowTF()
+  // ======================================================
+
+  std::filesystem::create_directories("/tmp/foundationpose_tracking_debug");
+
+  cv::Mat rgb_cpu(
+      static_cast<int>(rgb_H),
+      static_cast<int>(rgb_W),
+      CV_8UC3);
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      rgb_cpu.data,
+      rgb_img_handle->pointer(),
+      rgb_H * rgb_W * 3 * sizeof(uint8_t),
+      cudaMemcpyDeviceToHost,
+      cuda_stream_));
+
+  cudaStreamSynchronize(cuda_stream_);
+
+  // RGB to BGR for OpenCV saving
+  cv::cvtColor(rgb_cpu, rgb_cpu, cv::COLOR_RGB2BGR);
+
+  for (size_t i = 0; i < poses.size(); ++i)
+  {
+    float X = poses[i](0, 3);
+    float Y = poses[i](1, 3);
+    float Z = poses[i](2, 3);
+
+    if (Z <= 0.0f)
+    {
+      GXF_LOG_WARNING(
+          "[Tracking Center Debug] pose %zu has invalid Z=%f, skipping projection",
+          i, Z);
+      continue;
+    }
+
+    float u = K(0, 0) * X / Z + K(0, 2);
+    float v = K(1, 1) * Y / Z + K(1, 2);
+
+    GXF_LOG_INFO(
+       "[Tracking Center Debug] mode=%s iter=%d pose=%zu center=(%f,%f,%f), projected=(%f,%f)",
+        mode_.get().c_str(), iteration_count_, i, X, Y, Z, u, v);
+
+    cv::circle(
+        rgb_cpu,
+        cv::Point(static_cast<int>(std::round(u)), static_cast<int>(std::round(v))),
+        8,
+        cv::Scalar(0, 0, 255),
+        -1);
+  }
+
+  static int tracking_debug_frame_idx = 0;
+
+  std::stringstream ss;
+  ss << "/tmp/foundationpose_tracking_debug/frame_"
+    << std::setw(6)
+    << std::setfill('0')
+    << tracking_debug_frame_idx++
+    << "_"
+    << mode_.get()
+    << "_iter_"
+    << iteration_count_
+    << ".png";
+
+  cv::imwrite(ss.str(), rgb_cpu);
+
+  // ======================================================
+  // DEBUG CENTROID TRACKING PROJECTION ENDS HERE
+  // ======================================================
   
   Eigen::Vector2i out_size = {H, W};
   auto tfs = ComputeCropWindowTF(poses, K, out_size, crop_ratio_, mesh_data_ptr->mesh_diameter);
@@ -1068,6 +1378,15 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   // Prepare transformation matrices
   PreparePerspectiveTransformMatrix(cuda_stream_, tfs, trans_matrix_device_, N);
 
+  nvcv::Tensor mask_tensor;
+  WrapImgPtrToNHWCTensor(
+    reinterpret_cast<uint8_t*>(segmentation_handle->pointer()),
+    mask_tensor,
+    1,
+    rgb_H,
+    rgb_W,
+    1);
+
   // Process RGB image and XYZ map using BatchedWarpPerspective
   const nvcv::ImageFormat fmt_rgb = nvcv::FMT_RGB8;
   BatchedWarpPerspective(
@@ -1083,6 +1402,46 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       rgb_flags,
       border_value);
 
+  std::filesystem::create_directories("/tmp/foundationpose_crop_debug");
+
+  std::vector<uint8_t> crop_host(N * H * W * C);
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      crop_host.data(),
+      wp_image_device_,
+      N * H * W * C * sizeof(uint8_t),
+      cudaMemcpyDeviceToHost,
+      cuda_stream_));
+
+  cudaStreamSynchronize(cuda_stream_);
+
+  static int crop_debug_idx = 0;
+
+  for (size_t i = 0; i < N; ++i)
+  {
+    cv::Mat crop_rgb(
+        static_cast<int>(H),
+        static_cast<int>(W),
+        CV_8UC3,
+        crop_host.data() + i * H * W * C);
+
+    cv::Mat crop_bgr;
+    cv::cvtColor(crop_rgb, crop_bgr, cv::COLOR_RGB2BGR);
+
+    std::stringstream ss;
+    ss << "/tmp/foundationpose_crop_debug/frame_"
+      << std::setw(6)
+      << std::setfill('0')
+      << crop_debug_idx++
+      << "_"
+      << mode_.get()
+      << "_pose_"
+      << i
+      << ".png";
+
+    cv::imwrite(ss.str(), crop_bgr);
+  }
+
   const nvcv::ImageFormat fmt_xyz = nvcv::FMT_RGBf32;
   BatchedWarpPerspective(
       cuda_stream_, 
@@ -1097,6 +1456,91 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       xyz_flags,
       border_value);
 
+  // const nvcv::ImageFormat fmt_mask = nvcv::FMT_U8;
+  // BatchedWarpPerspective(
+  //     cuda_stream_,
+  //     mask_tensor,
+  //     transformed_mask_device_,
+  //     trans_matrix_device_,
+  //     num_of_trans_mat,
+  //     rgb_H, rgb_W,
+  //     H, W,
+  //     1,
+  //     fmt_mask,
+  //     NVCV_INTERP_NEAREST,
+  //     border_value);
+  
+  // // DilateMaskOnCPU(
+  // //   cuda_stream_,
+  // //   transformed_mask_device_,
+  // //   N,
+  // //   H,
+  // //   W,
+  // //   10);
+
+  // SaveMaskDebugImage(
+  //   cuda_stream_,
+  //   transformed_mask_device_,
+  //   N,
+  //   H,
+  //   W,
+  //   mode_.get() + std::string("_warped_mask"));
+
+  // apply_mask_to_xyz(
+  //     cuda_stream_,
+  //     transformed_xyz_map_device_,
+  //     transformed_mask_device_,
+  //     N * H * W);
+
+  // CHECK_CUDA_ERRORS(cudaGetLastError());
+
+  if (iteration_count_ == 0) {
+    nvcv::Tensor mask_tensor;
+    WrapImgPtrToNHWCTensor(
+        reinterpret_cast<uint8_t*>(segmentation_handle->pointer()),
+        mask_tensor,
+        1,
+        rgb_H,
+        rgb_W,
+        1);
+
+    const nvcv::ImageFormat fmt_mask = nvcv::FMT_U8;
+    BatchedWarpPerspective(
+        cuda_stream_,
+        mask_tensor,
+        transformed_mask_device_,
+        trans_matrix_device_,
+        num_of_trans_mat,
+        rgb_H, rgb_W,
+        H, W,
+        1,
+        fmt_mask,
+        NVCV_INTERP_NEAREST,
+        border_value);
+
+    SaveMaskDebugImage(
+        cuda_stream_,
+        transformed_mask_device_,
+        N,
+        H,
+        W,
+        mode_.get() + std::string("_warped_mask"));
+
+    apply_mask_to_xyz(
+        cuda_stream_,
+        transformed_xyz_map_device_,
+        transformed_mask_device_,
+        N * H * W);
+
+    CHECK_CUDA_ERRORS(cudaGetLastError());
+  }
+  
+  SaveXYZDebugImage(
+    cuda_stream_,
+    transformed_xyz_map_device_,
+    N, H, W, C,
+    mode_.get() + std::string("_before_threshold"));
+
   // Convert RGB image from U8 to float
   nvcv::TensorShape::ShapeType transformed_shape{N,H,W,C};
   nvcv::TensorShape transformed_tensor_shape{transformed_shape, "NHWC"};
@@ -1110,22 +1554,28 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   convert_op(cuda_stream_, transformed_rgb_tensor, float_rgb_tensor, scale_factor, 0.0f);
   CHECK_CUDA_ERRORS(cudaGetLastError());
 
-  threshold_and_downscale_pointcloud(
-      cuda_stream_,
-      transformed_xyz_map_device_,
-      reinterpret_cast<float*>(poses_handle->pointer()),
-      N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
-  CHECK_CUDA_ERRORS(cudaGetLastError());
+  // threshold_and_downscale_pointcloud(
+  //     cuda_stream_,
+  //     transformed_xyz_map_device_,
+  //     reinterpret_cast<float*>(poses_handle->pointer()),
+  //     N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
+  // CHECK_CUDA_ERRORS(cudaGetLastError());
+
+  SaveXYZDebugImage(
+    cuda_stream_,
+    transformed_xyz_map_device_,
+    N, H, W, C,
+    mode_.get() + std::string("_after_threshold"));
 
   auto render_rgb_data = render_rgb_tensor_.exportData<nvcv::TensorDataStridedCuda>();
   auto render_xyz_map_data = render_xyz_map_tensor_.exportData<nvcv::TensorDataStridedCuda>();
 
-  threshold_and_downscale_pointcloud(
-      cuda_stream_,
-      reinterpret_cast<float*>(render_xyz_map_data->basePtr()),
-      reinterpret_cast<float*>(poses_handle->pointer()),
-      N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
-  CHECK_CUDA_ERRORS(cudaGetLastError());
+  // threshold_and_downscale_pointcloud(
+  //     cuda_stream_,
+  //     reinterpret_cast<float*>(render_xyz_map_data->basePtr()),
+  //     reinterpret_cast<float*>(poses_handle->pointer()),
+  //     N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
+  // CHECK_CUDA_ERRORS(cudaGetLastError());
 
   // Score mode, accumulation stage
   // Only accumulate the output tensors and return

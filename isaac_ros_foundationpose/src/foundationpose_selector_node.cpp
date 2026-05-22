@@ -82,6 +82,11 @@ public:
           nvidia::isaac_ros::nitros::NitrosImage>>(
       this, "tracking/depth_image",
       nvidia::isaac_ros::nitros::nitros_image_32FC1_t::supported_type_name);
+    // constructor: Create publishers for tracking
+    tracking_segmentation_pub_ = std::make_shared<
+      nvidia::isaac_ros::nitros::ManagedNitrosPublisher<nvidia::isaac_ros::nitros::NitrosImage>>(
+      this, "tracking/segmentation",
+      nvidia::isaac_ros::nitros::nitros_image_mono8_t::supported_type_name);
     tracking_pose_pub_ = this->create_publisher<
       isaac_ros_tensor_list_interfaces::msg::TensorList>("tracking/pose_input", 1);
     tracking_camera_pub_ = this->create_publisher<
@@ -140,6 +145,7 @@ public:
     } else if (state_ == State::kTracking) {
       // Publish all messages except segmentation to tracking
       tracking_image_pub_->publish(*image_msg);
+      tracking_segmentation_pub_->publish(*segmentaion_msg);
       tracking_camera_pub_->publish(*camera_info_msg);
       tracking_depth_pub_->publish(*depth_msg);
       tracking_pose_pub_->publish(*tracking_pose_msg_);
@@ -193,6 +199,8 @@ private:
       nvidia::isaac_ros::nitros::NitrosImage>> tracking_image_pub_;
   std::shared_ptr<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
       nvidia::isaac_ros::nitros::NitrosImage>> tracking_depth_pub_;
+  std::shared_ptr<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
+    nvidia::isaac_ros::nitros::NitrosImage>> tracking_segmentation_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr tracking_camera_pub_;
   rclcpp::Publisher<isaac_ros_tensor_list_interfaces::msg::TensorList>::SharedPtr
     tracking_pose_pub_;

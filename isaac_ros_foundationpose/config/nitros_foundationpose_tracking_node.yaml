@@ -26,6 +26,14 @@ components:
   parameters:
     receiver: rgb_image_receiver
     min_size: 1
+- name: mask_receiver
+  type: nvidia::gxf::DoubleBufferReceiver
+  parameters:
+    capacity: 1
+- type: nvidia::gxf::MessageAvailableSchedulingTerm
+  parameters:
+    receiver: mask_receiver
+    min_size: 1
 - name: camera_model_receiver
   type: nvidia::gxf::DoubleBufferReceiver
   parameters:
@@ -50,6 +58,14 @@ components:
   parameters:
     transmitter: rgb_image_transmitter
     min_size: 1
+- name: mask_transmitter
+  type: nvidia::gxf::DoubleBufferTransmitter
+  parameters:
+    capacity: 1
+- type: nvidia::gxf::DownstreamReceptiveSchedulingTerm
+  parameters:
+    transmitter: mask_transmitter
+    min_size: 1
 - name: camera_model_transmitter
   type: nvidia::gxf::DoubleBufferTransmitter
   parameters:
@@ -68,8 +84,8 @@ components:
     min_size: 1
 - type: nvidia::gxf::Synchronization
   parameters:
-    inputs: [rgb_image_receiver, camera_model_receiver, depth_receiver]
-    outputs: [rgb_image_transmitter, camera_model_transmitter, depth_transmitter]
+    inputs: [rgb_image_receiver, camera_model_receiver, mask_receiver, depth_receiver]
+    outputs: [rgb_image_transmitter, camera_model_transmitter, mask_transmitter, depth_transmitter]
 ---
 name: depth_message_compositor
 components:
@@ -214,6 +230,10 @@ components:
   type: nvidia::gxf::DoubleBufferReceiver
   parameters:
     capacity: 1
+- name: segmentation_input
+  type: nvidia::gxf::DoubleBufferReceiver
+  parameters:
+    capacity: 1
 - name: camera_model_input
   type: nvidia::gxf::DoubleBufferReceiver
   parameters:
@@ -236,6 +256,10 @@ components:
     min_size: 1
 - type: nvidia::gxf::MessageAvailableSchedulingTerm
   parameters:
+    receiver: segmentation_input
+    min_size: 1
+- type: nvidia::gxf::MessageAvailableSchedulingTerm
+  parameters:
     receiver: camera_model_input
     min_size: 1
 - type: nvidia::gxf::DownstreamReceptiveSchedulingTerm
@@ -253,6 +277,7 @@ components:
     pose_array_input: pose_array_input
     point_cloud_input: point_cloud_input
     rgb_input: rgb_input
+    segmentation_input: segmentation_input
     camera_model_input: camera_model_input
     mode: refine
     output: output
@@ -475,6 +500,10 @@ components:
   parameters:
     source: sync/rgb_image_transmitter
     target: render/rgb_input
+- type: nvidia::gxf::Connection
+  parameters:
+    source: sync/mask_transmitter
+    target: render/segmentation_input
 - type: nvidia::gxf::Connection
   parameters:
     source: sync/camera_model_transmitter

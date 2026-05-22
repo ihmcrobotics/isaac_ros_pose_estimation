@@ -101,6 +101,7 @@ class FoundationposeRender : public gxf::Codelet {
 
   gxf::Parameter<gxf::Handle<gxf::Receiver>> pose_receiver_;
   gxf::Parameter<gxf::Handle<gxf::Receiver>> rgb_receiver_;
+  gxf::Parameter<gxf::Handle<gxf::Receiver>> segmentation_receiver_;
   gxf::Parameter<gxf::Handle<gxf::Receiver>> camera_model_receiver_;
   gxf::Parameter<gxf::Handle<gxf::Receiver>> point_cloud_receiver_;
   gxf::Parameter<gxf::Handle<gxf::Receiver>> iterative_pose_receiver_;
@@ -162,6 +163,7 @@ class FoundationposeRender : public gxf::Codelet {
   int32_t score_received_batches_ = 0;
   int32_t refine_received_batches_ = 0;
   int32_t iteration_count_ = 0;
+  uint8_t* transformed_mask_device_ = nullptr;
 
   cudaStream_t cuda_stream_ = 0;
 

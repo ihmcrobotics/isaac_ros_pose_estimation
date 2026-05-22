@@ -28,6 +28,7 @@
 #include "gxf/multimedia/video.hpp"
 #include "gxf/std/tensor.hpp"
 #include "gxf/std/timestamp.hpp"
+#include <fstream>
 
 namespace nvidia {
 namespace isaac_ros {
@@ -236,6 +237,31 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
     Eigen::Map<Eigen::Vector3f> cur_rot_delta(rot_delta.data() + index * 3, 3);
 
     trans_delta_vec[index] = cur_trans_delta.array() * (mesh_data_ptr->mesh_diameter / 2);
+    // Eigen::Vector3f trans_normalizer;
+    // trans_normalizer << 0.02f, 0.02f, 0.05f;
+
+    // trans_delta_vec[index] = cur_trans_delta.array() * trans_normalizer.array();
+    
+    {
+      std::ofstream log_file("/tmp/foundationpose_transform_debug.txt", std::ios::app);
+
+      log_file
+        << "mode=" << mode_.get()
+        << " iter=" << iteration_count_
+        << " batch=" << received_batches_
+        << " idx=" << index
+        << " raw_delta=("
+        << cur_trans_delta[0] << ", "
+        << cur_trans_delta[1] << ", "
+        << cur_trans_delta[2] << ")"
+        << " scaled_delta=("
+        << trans_delta_vec[index][0] << ", "
+        << trans_delta_vec[index][1] << ", "
+        << trans_delta_vec[index][2] << ")"
+        << " mesh_diameter=" << mesh_data_ptr->mesh_diameter
+        << std::endl;
+    }
+
     // Transform rotation vector into matrix through Rodrigues transform
     auto normalized_vect = (cur_rot_delta.array().tanh() * rot_normalizer_).matrix();
     Eigen::AngleAxisf rot_delta_angle_axis(normalized_vect.norm(), normalized_vect.normalized());
@@ -250,9 +276,32 @@ gxf_result_t FoundationposeTransformation::tick() noexcept {
     Eigen::Map<Eigen::MatrixXf> cur_pose(
         B_in_cam.data() + index * kTransformationMatrixSize * kTransformationMatrixSize,
         kTransformationMatrixSize, kTransformationMatrixSize);
+
+    Eigen::Vector3f before_t = cur_pose.col(3).head(3);
     // Add the last column of B_in_cam[i] with trans_delta[i]
     cur_pose.col(3).head(3) += trans_delta_vec[index];
 
+    Eigen::Vector3f after_t = cur_pose.col(3).head(3);
+
+    {
+      std::ofstream log_file("/tmp/foundationpose_transform_debug.txt", std::ios::app);
+
+      log_file
+        << "mode=" << mode_.get()
+        << " iter=" << iteration_count_
+        << " batch=" << received_batches_
+        << " idx=" << index
+        << " before_t=("
+        << before_t[0] << ", "
+        << before_t[1] << ", "
+        << before_t[2] << ")"
+        << " after_t=("
+        << after_t[0] << ", "
+        << after_t[1] << ", "
+        << after_t[2] << ")"
+        << std::endl;
+    }
+  
     // Extract the top-left 3x3 part of B_in_cam[i]
     Eigen::Matrix3f top_left_3x3 = cur_pose.block<3, 3>(0, 0);
     // Multiply the 3x3 part with rot_mat_delta[i]
