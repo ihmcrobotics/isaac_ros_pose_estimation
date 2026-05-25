@@ -70,6 +70,7 @@ class FoundationposeSampling : public gxf::Codelet {
 
   float* erode_depth_device_;
   float* bilateral_filter_depth_device_;
+  float* filtered_xyz_device_ = nullptr;
   bool cached_ = false;
 
   cudaStream_t cuda_stream_ = 0;

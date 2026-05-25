@@ -138,6 +138,37 @@ __global__ void bilateral_filter_depth_kernel(
   }
 }
 
+__global__ void depth_to_xyz_kernel(
+    float* depth,
+    float* xyz,
+    int H,
+    int W,
+    float fx,
+    float fy,
+    float cx,
+    float cy)
+{
+  int h = blockIdx.y * blockDim.y + threadIdx.y;
+  int w = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (w >= W || h >= H) {
+    return;
+  }
+
+  int idx = h * W + w;
+  float z = depth[idx];
+
+  if (z >= 0.1f && isfinite(z)) {
+    xyz[idx * 3 + 0] = (static_cast<float>(w) - cx) * z / fx;
+    xyz[idx * 3 + 1] = (static_cast<float>(h) - cy) * z / fy;
+    xyz[idx * 3 + 2] = z;
+  } else {
+    xyz[idx * 3 + 0] = 0.0f;
+    xyz[idx * 3 + 1] = 0.0f;
+    xyz[idx * 3 + 2] = 0.0f;
+  }
+}
+
 uint16_t ceil_div(uint16_t numerator, uint16_t denominator) {
   uint32_t accumulator = numerator + denominator - 1;
   return accumulator / denominator;
@@ -159,6 +190,24 @@ void bilateral_filter_depth(
   dim3 grid(ceil_div(W, 16), ceil_div(H, 16), 1);
 
   bilateral_filter_depth_kernel<<<grid, block, 0, stream>>>(depth, out, H, W, zfar, radius, sigmaD, sigmaR);
+}
+
+void depth_to_xyz(
+    cudaStream_t stream,
+    float* depth,
+    float* xyz,
+    int H,
+    int W,
+    float fx,
+    float fy,
+    float cx,
+    float cy)
+{
+  dim3 block(16, 16);
+  dim3 grid(ceil_div(W, 16), ceil_div(H, 16), 1);
+
+  depth_to_xyz_kernel<<<grid, block, 0, stream>>>(
+      depth, xyz, H, W, fx, fy, cx, cy);
 }
 
 }  // namespace isaac_ros

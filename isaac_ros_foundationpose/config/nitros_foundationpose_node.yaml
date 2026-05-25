@@ -254,12 +254,18 @@ components:
   parameters:
     transmitter: camera_model_output
     min_size: 6
+# - name: allocator
+#   type: nvidia::gxf::BlockMemoryPool
+#   parameters:
+#     storage_type: 1
+#     block_size: 16128  # Max_batch_size(252) * pose_matrix_size(4*4) * score_type(4) 
+#     num_blocks: 60 # 6 blocks per frame
 - name: allocator
   type: nvidia::gxf::BlockMemoryPool
   parameters:
     storage_type: 1
-    block_size: 16128  # Max_batch_size(252) * pose_matrix_size(4*4) * score_type(4) 
-    num_blocks: 60 # 6 blocks per frame
+    block_size: 8000000
+    num_blocks: 60
 - name: sampling_component
   type: nvidia::isaac_ros::FoundationposeSampling
   parameters:

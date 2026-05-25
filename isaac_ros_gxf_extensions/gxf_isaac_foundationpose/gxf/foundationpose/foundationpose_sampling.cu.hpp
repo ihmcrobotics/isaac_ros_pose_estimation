@@ -33,6 +33,16 @@ void erode_depth(
 void bilateral_filter_depth(
     cudaStream_t stream, float* depth, float* out, int H, int W, float zfar = 100, int radius = 2, float sigmaD = 2,
     float sigmaR = 100000);
+void depth_to_xyz(
+    cudaStream_t stream,
+    float* depth,
+    float* xyz,
+    int H,
+    int W,
+    float fx,
+    float fy,
+    float cx,
+    float cy);
 
 }  // namespace isaac_ros
 }  // namespace nvidia

@@ -25,6 +25,7 @@
 #include "foundationpose_sampling.hpp"
 #include "foundationpose_sync.hpp"
 #include "foundationpose_transformation.hpp"
+#include "foundationpose_depth_preprocessor.hpp"
 #include "mesh_storage.hpp"
 
 extern "C" {
@@ -42,7 +43,9 @@ GXF_EXT_FACTORY_ADD(
 GXF_EXT_FACTORY_ADD(
     0x52138759e5824999, 0x8d26bd90e602d335, nvidia::isaac_ros::FoundationposeSampling,
     nvidia::gxf::Codelet, "Codelet to generate pose hypothesis.");
-
+GXF_EXT_FACTORY_ADD(
+    0xa13f8c4e51b24c71, 0x9f4d82e6c3a14590, nvidia::isaac_ros::FoundationposeDepthPreprocessor,
+    nvidia::gxf::Codelet, "Codelet to preprocess depth and generate filtered XYZ for FoundationPose.");
 GXF_EXT_FACTORY_ADD(
     0xb2d0e3737b4f583f, 0xa13437c086f114e3, nvidia::isaac_ros::FoundationposeDecoder,
     nvidia::gxf::Codelet, "Codelet to decode, sort and select the final pose.");

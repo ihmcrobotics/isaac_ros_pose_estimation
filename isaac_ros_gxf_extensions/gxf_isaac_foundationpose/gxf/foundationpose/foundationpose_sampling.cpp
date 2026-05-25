@@ -742,6 +742,7 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
     int size = width * height * sizeof(float);
     CHECK_CUDA_ERRORS(cudaMalloc(&erode_depth_device_, size));
     CHECK_CUDA_ERRORS(cudaMalloc(&bilateral_filter_depth_device_, size));
+    CHECK_CUDA_ERRORS(cudaMalloc(&filtered_xyz_device_, width * height * 3 * sizeof(float)));
     cached_ = true;
   }
 
@@ -764,6 +765,19 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
   CHECK_CUDA_ERRORS(cudaGetLastError());
 
   bilateral_filter_depth(cuda_stream_, erode_depth_device_, bilateral_filter_depth_device_, height, width);
+  CHECK_CUDA_ERRORS(cudaGetLastError());
+
+  depth_to_xyz(
+    cuda_stream_,
+    bilateral_filter_depth_device_,
+    filtered_xyz_device_,
+    height,
+    width,
+    K(0, 0),
+    K(1, 1),
+    K(0, 2),
+    K(1, 2));
+
   CHECK_CUDA_ERRORS(cudaGetLastError());
 
   RowMajorMatrix8u mask;
@@ -1095,8 +1109,47 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
 
     GXF_LOG_ERROR("[Sampling] Publishing batch %d / %d", i, kNumBatches);
 
+    auto maybe_filtered_xyz_message = gxf::Entity::New(context());
+    if (!maybe_filtered_xyz_message) {
+      GXF_LOG_ERROR("[FoundationposeSampling] Failed to allocate filtered XYZ message");
+      return gxf::ToResultCode(maybe_filtered_xyz_message);
+    }
+    auto filtered_xyz_message = maybe_filtered_xyz_message.value();
+
+    auto maybe_filtered_points = filtered_xyz_message.add<gxf::Tensor>(kNamePoints);
+    if (!maybe_filtered_points) {
+      GXF_LOG_ERROR("[FoundationposeSampling] Failed to add filtered XYZ tensor");
+      return gxf::ToResultCode(maybe_filtered_points);
+    }
+    auto filtered_points = maybe_filtered_points.value();
+
+    std::array<int32_t, nvidia::gxf::Shape::kMaxRank> xyz_shape{
+        static_cast<int32_t>(height),
+        static_cast<int32_t>(width),
+        3};
+
+    auto xyz_result = filtered_points->reshape<float>(
+        nvidia::gxf::Shape{xyz_shape, 3},
+        nvidia::gxf::MemoryStorageType::kDevice,
+        allocator_);
+
+    if (!xyz_result) {
+      GXF_LOG_ERROR("[FoundationposeSampling] Failed to reshape filtered XYZ tensor");
+      return gxf::ToResultCode(xyz_result);
+    }
+
+    CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+        filtered_points->pointer(),
+        filtered_xyz_device_,
+        height * width * 3 * sizeof(float),
+        cudaMemcpyDeviceToDevice,
+        cuda_stream_));
+
+    CHECK_CUDA_ERRORS(cudaStreamSynchronize(cuda_stream_));
+
     posearray_transmitter_->publish(output_message);
-    point_cloud_transmitter_->publish(maybe_xyz_message.value());
+    // point_cloud_transmitter_->publish(maybe_xyz_message.value());
+    point_cloud_transmitter_->publish(std::move(filtered_xyz_message));
     rgb_transmitter_->publish(maybe_rgb_message.value());
     camera_model_transmitter_->publish(maybe_camera_model_out_message.value());
   }
@@ -1106,6 +1159,7 @@ gxf_result_t FoundationposeSampling::tick() noexcept {
 gxf_result_t FoundationposeSampling::stop() noexcept { 
   CHECK_CUDA_ERRORS(cudaFree(erode_depth_device_));
   CHECK_CUDA_ERRORS(cudaFree(bilateral_filter_depth_device_));
+  CHECK_CUDA_ERRORS(cudaFree(filtered_xyz_device_));
   return GXF_SUCCESS;
 }
 

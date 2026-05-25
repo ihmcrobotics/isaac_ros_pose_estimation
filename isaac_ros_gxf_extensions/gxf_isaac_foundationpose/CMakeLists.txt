@@ -49,6 +49,7 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
     
     gxf/foundationpose/foundationpose_sampling.cpp
     gxf/foundationpose/foundationpose_sampling.cu
+    gxf/foundationpose/foundationpose_depth_preprocessor.cpp
     gxf/foundationpose/foundationpose_sync.cpp
     gxf/foundationpose/foundationpose_render.cpp
     gxf/foundationpose/foundationpose_render.cu

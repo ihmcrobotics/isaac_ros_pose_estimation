@@ -156,6 +156,48 @@ components:
     allocator: allocator
     min_blocks: 1
 ---
+name: filtered_depth_to_xyz
+components:
+- name: depth_input
+  type: nvidia::gxf::DoubleBufferReceiver
+  parameters:
+    capacity: 1
+- type: nvidia::gxf::MessageAvailableSchedulingTerm
+  parameters:
+    receiver: depth_input
+    min_size: 1
+- name: point_cloud_output
+  type: nvidia::gxf::DoubleBufferTransmitter
+  parameters:
+    capacity: 1
+- type: nvidia::gxf::DownstreamReceptiveSchedulingTerm
+  parameters:
+    transmitter: point_cloud_output
+    min_size: 1
+- name: allocator
+  type: nvidia::gxf::BlockMemoryPool
+  parameters:
+    storage_type: 1
+    block_size: 8000000
+    num_blocks: 4
+# - name: depth_preprocessor
+#   type: nvidia::isaac_ros::FoundationposeDepthPreprocessor
+#   parameters:
+#     depth_input: depth_input
+#     point_cloud_output: point_cloud_output
+#     allocator: allocator
+#     cuda_stream_pool: utils/stream
+- type: nvidia::isaac_ros::FoundationposeDepthPreprocessor
+  parameters:
+    depth_input: depth_input
+    point_cloud_output: point_cloud_output
+    allocator: allocator
+    cuda_stream_pool: utils/stream
+- type: nvidia::gxf::MemoryAvailableSchedulingTerm
+  parameters:
+    allocator: allocator
+    min_blocks: 1
+---
 name: pose_broadcaster
 components:
 - name: poses_input
@@ -516,10 +558,18 @@ components:
   parameters:
     source: depth_message_compositor/depth_message_output
     target: depth_to_pointcloud/depth_receiver
+# - type: nvidia::gxf::Connection
+#   parameters:
+#     source: depth_to_pointcloud/point_cloud_transmitter
+#     target: render/point_cloud_input
 - type: nvidia::gxf::Connection
   parameters:
-    source: depth_to_pointcloud/point_cloud_transmitter
+    source: filtered_depth_to_xyz/point_cloud_output
     target: render/point_cloud_input
+- type: nvidia::gxf::Connection
+  parameters:
+    source: depth_message_compositor/depth_message_output
+    target: filtered_depth_to_xyz/depth_input
 - type: nvidia::gxf::Connection
   parameters:
     source: pose_broadcaster/broadcast_poses_1
