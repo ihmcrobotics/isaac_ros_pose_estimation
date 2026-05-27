@@ -1114,7 +1114,7 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       cuda_stream_,
       transformed_xyz_map_device_,
       reinterpret_cast<float*>(poses_handle->pointer()),
-      N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
+      N, W * H, mesh_data_ptr->mesh_diameter / 3, min_depth_, max_depth_);
   CHECK_CUDA_ERRORS(cudaGetLastError());
 
   auto render_rgb_data = render_rgb_tensor_.exportData<nvcv::TensorDataStridedCuda>();
@@ -1124,7 +1124,7 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       cuda_stream_,
       reinterpret_cast<float*>(render_xyz_map_data->basePtr()),
       reinterpret_cast<float*>(poses_handle->pointer()),
-      N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
+      N, W * H, mesh_data_ptr->mesh_diameter / 3, min_depth_, max_depth_);
   CHECK_CUDA_ERRORS(cudaGetLastError());
 
   // Score mode, accumulation stage
