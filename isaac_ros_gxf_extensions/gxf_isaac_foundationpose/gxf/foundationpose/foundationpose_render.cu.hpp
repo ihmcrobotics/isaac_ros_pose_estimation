@@ -38,6 +38,9 @@ void clamp(cudaStream_t stream, float* input, float min_value, float max_value, 
 void threshold_and_downscale_pointcloud(
     cudaStream_t stream, float* pointcloud_input, float* pose_array_input, int N, int n_points, float downscale_factor,
     float min_depth, float max_depth);
+// void erode_bilateral_filter_xyz_z(
+//     cudaStream_t stream, float* xyz, int N, int H, int W, int radius, float depth_diff_thres, float ratio_thres,
+//     float zfar, float sigmaD, float sigmaR);
 void transform_pts(
     cudaStream_t stream, float* output, const float* pts, const float* tfs, int pts_num, int pts_channel, int tfs_num, int tfs_dim);
 void generate_pose_clip(

@@ -108,6 +108,227 @@ __global__ void threshold_and_downscale_pointcloud_kernel(
 }
 
 
+// __global__ void erode_xyz_z_kernel(
+//     const float* xyz,
+//     float* z_out,
+//     int N,
+//     int H,
+//     int W,
+//     int radius,
+//     float depth_diff_thres,
+//     float ratio_thres,
+//     float zfar)
+// {
+//   int w = blockIdx.x * blockDim.x + threadIdx.x;
+//   int h = blockIdx.y * blockDim.y + threadIdx.y;
+//   int n = blockIdx.z;
+
+//   if (w >= W || h >= H || n >= N) {
+//     return;
+//   }
+
+//   int pix_idx = n * H * W + h * W + w;
+//   int xyz_idx = pix_idx * 3;
+
+//   float d_ori = xyz[xyz_idx + 2];
+
+//   if (d_ori < 0.1f || d_ori >= zfar || !isfinite(d_ori)) {
+//     z_out[pix_idx] = 0.0f;
+//     return;
+//   }
+
+//   float bad_cnt = 0.0f;
+//   float total = 0.0f;
+
+//   for (int u = w - radius; u <= w + radius; u++) {
+//     if (u < 0 || u >= W) {
+//       continue;
+//     }
+
+//     for (int v = h - radius; v <= h + radius; v++) {
+//       if (v < 0 || v >= H) {
+//         continue;
+//       }
+
+//       int n_pix_idx = n * H * W + v * W + u;
+//       float cur_depth = xyz[n_pix_idx * 3 + 2];
+
+//       total += 1.0f;
+
+//       if (cur_depth < 0.1f || cur_depth >= zfar || !isfinite(cur_depth) ||
+//           fabsf(cur_depth - d_ori) > depth_diff_thres) {
+//         bad_cnt += 1.0f;
+//       }
+//     }
+//   }
+
+//   if ((bad_cnt / total) > ratio_thres) {
+//     z_out[pix_idx] = 0.0f;
+//   } else {
+//     z_out[pix_idx] = d_ori;
+//   }
+// }
+
+// __global__ void bilateral_filter_xyz_z_kernel(
+//     float* xyz,
+//     const float* z_in,
+//     int N,
+//     int H,
+//     int W,
+//     float zfar,
+//     int radius,
+//     float sigmaD,
+//     float sigmaR)
+// {
+//   int w = blockIdx.x * blockDim.x + threadIdx.x;
+//   int h = blockIdx.y * blockDim.y + threadIdx.y;
+//   int n = blockIdx.z;
+
+//   if (w >= W || h >= H || n >= N) {
+//     return;
+//   }
+
+//   int pix_idx = n * H * W + h * W + w;
+//   int xyz_idx = pix_idx * 3;
+
+//   float depthCenter = z_in[pix_idx];
+
+//   if (depthCenter < 0.1f || depthCenter >= zfar || !isfinite(depthCenter)) {
+//     xyz[xyz_idx + 0] = 0.0f;
+//     xyz[xyz_idx + 1] = 0.0f;
+//     xyz[xyz_idx + 2] = 0.0f;
+//     return;
+//   }
+
+//   float mean_depth = 0.0f;
+//   int num_valid = 0;
+
+//   for (int u = w - radius; u <= w + radius; u++) {
+//     if (u < 0 || u >= W) {
+//       continue;
+//     }
+
+//     for (int v = h - radius; v <= h + radius; v++) {
+//       if (v < 0 || v >= H) {
+//         continue;
+//       }
+
+//       int n_pix_idx = n * H * W + v * W + u;
+//       float cur_depth = z_in[n_pix_idx];
+
+//       if (cur_depth >= 0.1f && cur_depth < zfar && isfinite(cur_depth)) {
+//         num_valid++;
+//         mean_depth += cur_depth;
+//       }
+//     }
+//   }
+
+//   if (num_valid == 0) {
+//     xyz[xyz_idx + 0] = 0.0f;
+//     xyz[xyz_idx + 1] = 0.0f;
+//     xyz[xyz_idx + 2] = 0.0f;
+//     return;
+//   }
+
+//   mean_depth /= static_cast<float>(num_valid);
+
+//   float sum_weight = 0.0f;
+//   float sum = 0.0f;
+
+//   for (int u = w - radius; u <= w + radius; u++) {
+//     if (u < 0 || u >= W) {
+//       continue;
+//     }
+
+//     for (int v = h - radius; v <= h + radius; v++) {
+//       if (v < 0 || v >= H) {
+//         continue;
+//       }
+
+//       int n_pix_idx = n * H * W + v * W + u;
+//       float cur_depth = z_in[n_pix_idx];
+
+//       if (cur_depth >= 0.1f && cur_depth < zfar && isfinite(cur_depth) &&
+//           fabsf(cur_depth - mean_depth) < 0.01f) {
+//         float weight = expf(
+//             -((float)((u - w) * (u - w) + (v - h) * (v - h))) / (2.0f * sigmaD * sigmaD) -
+//             (depthCenter - cur_depth) * (depthCenter - cur_depth) / (2.0f * sigmaR * sigmaR));
+
+//         sum_weight += weight;
+//         sum += weight * cur_depth;
+//       }
+//     }
+//   }
+
+//   if (sum_weight <= 0.0f) {
+//     xyz[xyz_idx + 0] = 0.0f;
+//     xyz[xyz_idx + 1] = 0.0f;
+//     xyz[xyz_idx + 2] = 0.0f;
+//     return;
+//   }
+
+//   float new_z = sum / sum_weight;
+//   float old_z = xyz[xyz_idx + 2];
+
+//   if (old_z < 0.1f || old_z >= zfar || !isfinite(old_z)) {
+//     xyz[xyz_idx + 0] = 0.0f;
+//     xyz[xyz_idx + 1] = 0.0f;
+//     xyz[xyz_idx + 2] = 0.0f;
+//     return;
+//   }
+
+//   float scale = new_z / old_z;
+
+//   xyz[xyz_idx + 0] *= scale;
+//   xyz[xyz_idx + 1] *= scale;
+//   xyz[xyz_idx + 2] = new_z;
+// }
+
+// void erode_bilateral_filter_xyz_z(
+//     cudaStream_t stream,
+//     float* xyz,
+//     int N,
+//     int H,
+//     int W,
+//     int radius,
+//     float depth_diff_thres,
+//     float ratio_thres,
+//     float zfar,
+//     float sigmaD,
+//     float sigmaR)
+// {
+//   float* z_eroded = nullptr;
+//   cudaMalloc(&z_eroded, N * H * W * sizeof(float));
+
+//   dim3 block(16, 16);
+//   dim3 grid((W + 15) / 16, (H + 15) / 16, N);
+
+//   erode_xyz_z_kernel<<<grid, block, 0, stream>>>(
+//       xyz,
+//       z_eroded,
+//       N,
+//       H,
+//       W,
+//       radius,
+//       depth_diff_thres,
+//       ratio_thres,
+//       zfar);
+
+//   bilateral_filter_xyz_z_kernel<<<grid, block, 0, stream>>>(
+//       xyz,
+//       z_eroded,
+//       N,
+//       H,
+//       W,
+//       zfar,
+//       radius,
+//       sigmaD,
+//       sigmaR);
+
+//   cudaFree(z_eroded);
+// }
+
+
 // concat two NHWC array on the last dimension
 __global__ void concat_kernel(
     float* input_a, float* input_b, float* output, int N, int H, int W, int C1, int C2) {
@@ -259,16 +480,16 @@ void generate_pose_clip(
         d_pose_clip, d_pose, d_bbox2d, d_mesh_vertices, N, n_pts, rgb_H, rgb_W);
 }
 
-void threshold_and_downscale_pointcloud(
-    cudaStream_t stream, float* pointcloud_input, float* pose_array_input, int N, int n_points, float downscale_factor,
-    float min_depth, float max_depth) {
-  // Launch n_points threads
-  int block_size = 256;
-  int grid_size = ((N * n_points) + block_size - 1) / block_size;
+// void threshold_and_downscale_pointcloud(
+//     cudaStream_t stream, float* pointcloud_input, float* pose_array_input, int N, int n_points, float downscale_factor,
+//     float min_depth, float max_depth) {
+//   // Launch n_points threads
+//   int block_size = 256;
+//   int grid_size = ((N * n_points) + block_size - 1) / block_size;
 
-  threshold_and_downscale_pointcloud_kernel<<<grid_size, block_size, 0, stream>>>(
-      pointcloud_input, pose_array_input, N, n_points, downscale_factor, min_depth, max_depth);
-}
+//   threshold_and_downscale_pointcloud_kernel<<<grid_size, block_size, 0, stream>>>(
+//       pointcloud_input, pose_array_input, N, n_points, downscale_factor, min_depth, max_depth);
+// }
 
 void transform_pts(
   cudaStream_t stream, float* output, const float* pts, const float* tfs, int pts_num, int pts_channel, int tfs_num, int tfs_dim) {

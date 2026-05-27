@@ -1024,6 +1024,60 @@ gxf_result_t FoundationposeRender::tick() noexcept {
         pose_host.data() + i * pose_rows * pose_cols, pose_rows, pose_cols);
     poses.push_back(mat);
   }
+
+  std::filesystem::create_directories("/tmp/foundationpose_tracking_debug");
+
+  cv::Mat rgb_cpu(
+      static_cast<int>(rgb_H),
+      static_cast<int>(rgb_W),
+      CV_8UC3);
+
+  CHECK_CUDA_ERRORS(cudaMemcpyAsync(
+      rgb_cpu.data,
+      rgb_img_handle->pointer(),
+      rgb_H * rgb_W * 3 * sizeof(uint8_t),
+      cudaMemcpyDeviceToHost,
+      cuda_stream_));
+
+  cudaStreamSynchronize(cuda_stream_);
+
+  cv::cvtColor(rgb_cpu, rgb_cpu, cv::COLOR_RGB2BGR);
+
+  for (size_t i = 0; i < poses.size(); ++i)
+  {
+    float X = poses[i](0, 3);
+    float Y = poses[i](1, 3);
+    float Z = poses[i](2, 3);
+
+    if (Z <= 0.0f) {
+      continue;
+    }
+
+    float u = K(0, 0) * X / Z + K(0, 2);
+    float v = K(1, 1) * Y / Z + K(1, 2);
+
+    cv::circle(
+        rgb_cpu,
+        cv::Point(static_cast<int>(std::round(u)), static_cast<int>(std::round(v))),
+        8,
+        cv::Scalar(0, 0, 255),
+        -1);
+  }
+
+  static int tracking_debug_frame_idx = 0;
+
+  std::stringstream ss;
+  ss << "/tmp/foundationpose_tracking_debug/frame_"
+     << std::setw(6)
+     << std::setfill('0')
+     << tracking_debug_frame_idx++
+     << "_"
+     << mode_.get()
+     << "_iter_"
+     << iteration_count_
+     << ".png";
+
+  cv::imwrite(ss.str(), rgb_cpu);
   
   Eigen::Vector2i out_size = {H, W};
   auto tfs = ComputeCropWindowTF(poses, K, out_size, crop_ratio_, mesh_data_ptr->mesh_diameter);
@@ -1110,12 +1164,26 @@ gxf_result_t FoundationposeRender::tick() noexcept {
   convert_op(cuda_stream_, transformed_rgb_tensor, float_rgb_tensor, scale_factor, 0.0f);
   CHECK_CUDA_ERRORS(cudaGetLastError());
 
+  // erode_bilateral_filter_xyz_z(
+  //   cuda_stream_,
+  //   transformed_xyz_map_device_,
+  //   N,
+  //   H,
+  //   W,
+  //   2,       // radius
+  //   0.01f,   // depth_diff_thres
+  //   0.8f,    // ratio_thres
+  //   max_depth_,
+  //   2.0f,    // sigmaD
+  //   0.02f);  // sigmaR
+  // CHECK_CUDA_ERRORS(cudaGetLastError());
+
   threshold_and_downscale_pointcloud(
       cuda_stream_,
       transformed_xyz_map_device_,
       reinterpret_cast<float*>(poses_handle->pointer()),
-      N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
-  CHECK_CUDA_ERRORS(cudaGetLastError());
+      N, W * H, mesh_data_ptr->mesh_diameter / 3, min_depth_, max_depth_);
+  
 
   auto render_rgb_data = render_rgb_tensor_.exportData<nvcv::TensorDataStridedCuda>();
   auto render_xyz_map_data = render_xyz_map_tensor_.exportData<nvcv::TensorDataStridedCuda>();
@@ -1124,8 +1192,22 @@ gxf_result_t FoundationposeRender::tick() noexcept {
       cuda_stream_,
       reinterpret_cast<float*>(render_xyz_map_data->basePtr()),
       reinterpret_cast<float*>(poses_handle->pointer()),
-      N, W * H, mesh_data_ptr->mesh_diameter / 2, min_depth_, max_depth_);
-  CHECK_CUDA_ERRORS(cudaGetLastError());
+      N, W * H, mesh_data_ptr->mesh_diameter / 3, min_depth_, max_depth_);
+
+  // erode_bilateral_filter_xyz_z(
+  //   cuda_stream_,
+  //   reinterpret_cast<float*>(render_xyz_map_data->basePtr()),
+  //   N,
+  //   H,
+  //   W,
+  //   2,
+  //   0.01f,
+  //   0.8f,
+  //   max_depth_,
+  //   2.0f,
+  //   0.02f);
+  // CHECK_CUDA_ERRORS(cudaGetLastError());
+
 
   // Score mode, accumulation stage
   // Only accumulate the output tensors and return
